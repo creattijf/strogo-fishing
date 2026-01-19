@@ -5,83 +5,122 @@ import requests
 app = Flask(__name__)
 CORS(app)
 
+# --- 1. ПРОВЕРКА ОНЛАЙНА (Старая функция) ---
 def check_is_fishing(faceit_input):
-    # Настраиваем заголовки, чтобы притвориться браузером
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/json",
+        "User-Agent": "Mozilla/5.0",
         "Referer": "https://www.faceit.com/"
     }
-
     try:
-        # 1. Вытаскиваем НИКНЕЙМ из ссылки
         nickname = faceit_input
         if "faceit.com" in faceit_input:
-            # Если ссылка вида https://www.faceit.com/ru/players/Nickname
-            # Разбиваем по слэшам и берем последний кусок
             parts = faceit_input.rstrip('/').split('/')
             nickname = parts[-1]
         
-        # 2. Получаем ID игрока (User ID) через API Фейсита
-        # Это публичный запрос, который делает сам сайт
+        # Получаем ID
         user_url = f"https://api.faceit.com/users/v1/nicknames/{nickname}"
         user_res = requests.get(user_url, headers=headers)
-        
-        if user_res.status_code != 200:
-            print(f"Error finding user: {nickname}")
-            return "error"
-            
-        user_data = user_res.json()
-        user_id = user_data.get('payload', {}).get('id')
-        
-        if not user_id:
-            return "error"
+        if user_res.status_code != 200: return "error"
+        user_id = user_res.json().get('payload', {}).get('id')
+        if not user_id: return "error"
 
-        # 3. Проверяем активные матчи для этого ID
-        # Этот запрос возвращает список текущих игр (ONGOING, CHECK_IN и т.д.)
+        # Проверяем матчи
         match_url = f"https://api.faceit.com/match/v1/matches/groupByState?userId={user_id}"
         match_res = requests.get(match_url, headers=headers)
+        if match_res.status_code != 200: return False
         
-        if match_res.status_code != 200:
-            return False
-            
-        match_data = match_res.json()
-        payload = match_data.get('payload', {})
-
-        # Фейсит возвращает объект, где ключи - это статусы (ONGOING, CHECK_IN, READY)
-        # Если в каком-то из этих списков есть данные, значит игрок занят (В пруду)
-        
-        is_playing = False
-        
-        # Пробегаемся по всем возможным статусам матча
+        payload = match_res.json().get('payload', {})
         for state in payload:
-            matches_list = payload[state]
-            # Если список матчей в этом статусе не пустой -> Игрок играет
-            if matches_list and len(matches_list) > 0:
-                is_playing = True
-                break
-        
-        return is_playing
-
-    except Exception as e:
-        print(f"Global Error: {e}")
+            if payload[state] and len(payload[state]) > 0:
+                return True
+        return False
+    except:
         return "error"
 
-# Маршрут
+# --- 2. ПОЛУЧЕНИЕ СТАТИСТИКИ МАТЧА (Новая функция) ---
+def get_match_stats_logic(match_url):
+    headers = {"User-Agent": "Mozilla/5.0"}
+    target_nickname = "StRoGo" # Ищем ТОЛЬКО этого игрока
+
+    try:
+        # Вытаскиваем Match ID из ссылки
+        # Ссылка вида: .../room/1-54cc7dd5-fc1e...
+        if "room/" not in match_url:
+            return {"error": "Неверная ссылка"}
+        
+        match_id = match_url.split("room/")[1].split("/")[0]
+
+        # Запрос к API статистики
+        api_url = f"https://api.faceit.com/stats/v1/stats/matches/{match_id}"
+        response = requests.get(api_url, headers=headers)
+        
+        if response.status_code != 200:
+            return {"error": "Матч не найден или еще идет"}
+
+        data = response.json().get('payload', [])
+        if not data:
+            return {"error": "Нет данных"}
+
+        match_data = data[0] # Берем первый (единственный) матч
+        
+        # Ищем StRoGo в командах
+        target_player = None
+        my_team_id = None
+        winner_team_id = match_data.get('calculateEloFrom', {}).get('winner') # Кто победил
+
+        # Пробегаемся по командам
+        for team in match_data.get('teams', []):
+            for player in team.get('players', []):
+                # Сравниваем ник (регистр не важен)
+                if player.get('nickname').lower() == target_nickname.lower():
+                    target_player = player
+                    my_team_id = team.get('teamId')
+                    break
+            if target_player: break
+        
+        if not target_player:
+            return {"error": f"Игрок {target_nickname} не найден в этом матче"}
+
+        # Определяем результат
+        result = "LOSE"
+        if my_team_id == winner_team_id:
+            result = "WIN"
+
+        # Собираем статистику
+        stats = {
+            "nickname": target_player.get('nickname'),
+            "result": result,
+            "kills": target_player.get('i6'),
+            "deaths": target_player.get('i8'),
+            "assists": target_player.get('i7'),
+            "kr": target_player.get('c3'),  # K/R Ratio
+            "kd": target_player.get('c2'),  # K/D Ratio
+            "hs_percent": target_player.get('c4'), # HS %
+            "mvp": target_player.get('i9'),
+            "score": f"{match_data.get('i18', {}).get('score')}" # Счет матча (строка "13 / 10")
+        }
+        
+        return stats
+
+    except Exception as e:
+        print(e)
+        return {"error": "Ошибка обработки"}
+
+# --- МАРШРУТЫ ---
+
 @app.route('/api/check_fish', methods=['POST'])
 def check_fish():
     data = request.json
-    url = data.get('url')
-    
-    # Добавим задержку или повторную попытку здесь не нужно, API отвечает мгновенно
-    status = check_is_fishing(url)
-    
-    if status == "error":
-        return jsonify({"status": "error", "message": "Не найден"})
-    elif status:
-        return jsonify({"status": "online", "message": "В пруду 🎣"})
-    else:
-        return jsonify({"status": "offline", "message": "Не в пруду ❌"})
+    status = check_is_fishing(data.get('url'))
+    if status == "error": return jsonify({"status": "error"})
+    elif status: return jsonify({"status": "online"})
+    else: return jsonify({"status": "offline"})
+
+@app.route('/api/get_match_stats', methods=['POST'])
+def get_match_stats():
+    data = request.json
+    stats = get_match_stats_logic(data.get('url'))
+    return jsonify(stats)
 
 if __name__ == '__main__':
     app.run(debug=True)
