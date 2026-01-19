@@ -6,13 +6,9 @@ import json
 app = Flask(__name__)
 CORS(app)
 
-# Имитируем настоящий браузер, чтобы Faceit не блокировал
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
-    "Referer": "https://www.faceit.com/",
-    "Origin": "https://www.faceit.com"
+    "Accept": "application/json"
 }
 
 # --- 1. ПРОВЕРКА ОНЛАЙНА ---
@@ -23,23 +19,17 @@ def check_is_fishing(faceit_input):
             parts = faceit_input.rstrip('/').split('/')
             nickname = parts[-1]
         
-        # 1. Получаем ID игрока
         user_url = f"https://api.faceit.com/users/v1/nicknames/{nickname}"
         user_res = requests.get(user_url, headers=HEADERS)
-        
         if user_res.status_code != 200: return "error"
-        user_data = user_res.json()
-        user_id = user_data.get('payload', {}).get('id')
         
-        if not user_id: return "error"
-
-        # 2. Проверяем матчи
+        user_id = user_res.json().get('payload', {}).get('id')
+        
         match_url = f"https://api.faceit.com/match/v1/matches/groupByState?userId={user_id}"
         match_res = requests.get(match_url, headers=HEADERS)
         
-        if match_res.status_code != 200: return False
-        
-        payload = match_res.json().get('payload', {})
+        data = match_res.json()
+        payload = data.get('payload', {})
         for state in payload:
             matches = payload[state]
             if isinstance(matches, list) and len(matches) > 0:
@@ -48,70 +38,71 @@ def check_is_fishing(faceit_input):
     except:
         return "error"
 
-# --- 2. ПОЛУЧЕНИЕ СТАТИСТИКИ (StRoGo) ---
+# --- 2. ПОЛУЧЕНИЕ СТАТИСТИКИ (УНИВЕРСАЛЬНАЯ ВЕРСИЯ) ---
 def get_match_stats_logic(match_url):
     target_nickname = "StRoGo" 
 
     try:
-        # 1. Получаем ID матча
+        # 1. ID Матча
         if "room/" not in match_url:
-            return {"error": "Ссылка должна содержать /room/..."}
+            return {"error": "Нужна ссылка на комнату (.../room/ID)"}
         
-        match_id_part = match_url.split("room/")[1]
-        match_id = match_id_part.split("/")[0] # Берём ID до следующего слэша
-
-        # 2. Запрос к API
+        match_id = match_url.split("room/")[1].split("/")[0]
         api_url = f"https://api.faceit.com/stats/v1/stats/matches/{match_id}"
-        print(f"Requesting: {api_url}") # Лог в консоль сервера
+        
+        print(f"DEBUG: Requesting {api_url}")
         
         response = requests.get(api_url, headers=HEADERS)
-        
-        # Если статус не 200, выводим код ошибки
         if response.status_code != 200:
-            return {"error": f"Faceit API вернул код {response.status_code}"}
+            return {"error": f"Ошибка сервера Faceit: {response.status_code}"}
 
-        # Пытаемся распарсить JSON
-        try:
-            json_data = response.json()
-        except json.JSONDecodeError:
-            return {"error": "Faceit вернул не JSON (возможно, защита от ботов)"}
+        raw_data = response.json()
+        
+        # --- ЛОГИКА ПОИСКА ДАННЫХ ---
+        # Faceit может вернуть: {"payload": [...]} ИЛИ просто [...]
+        
+        matches_list = []
 
-        # Проверяем, что пришел словарь
-        if not isinstance(json_data, dict):
-            return {"error": f"Странный ответ API: {type(json_data)}"}
+        if isinstance(raw_data, dict):
+            matches_list = raw_data.get('payload', [])
+        elif isinstance(raw_data, list):
+            matches_list = raw_data
+        else:
+            print(f"DEBUG: Unknown data type: {type(raw_data)}")
+            return {"error": "Непонятный ответ от Faceit"}
 
-        payload = json_data.get('payload')
+        # Проверяем, есть ли матчи в списке
+        if not matches_list or not isinstance(matches_list, list) or len(matches_list) == 0:
+            return {"error": "Данные о матче пусты"}
 
-        # Если payload пустой -> матч есть, но статы нет (отменен или еще идет)
-        if not payload:
-            return {"error": "Статистика матча еще не готова или недоступна"}
+        # Берем первый матч
+        match_data = matches_list[0]
+        
+        # Если это снова список (бывает двойная вложенность)
+        if isinstance(match_data, list):
+            if len(match_data) > 0:
+                match_data = match_data[0]
+            else:
+                return {"error": "Пустой вложенный список"}
 
-        # Нормализация данных (список или словарь?)
-        match_data = None
-        if isinstance(payload, list):
-            if len(payload) > 0:
-                match_data = payload[0]
-                # Двойная вложенность (бывает редко)
-                if isinstance(match_data, list) and len(match_data) > 0:
-                    match_data = match_data[0]
-        elif isinstance(payload, dict):
-            match_data = payload
-
+        # Если после всего этого match_data не словарь - беда
         if not isinstance(match_data, dict):
-            return {"error": "Не удалось найти данные матча в ответе"}
+            print(f"DEBUG: match_data is {type(match_data)}")
+            return {"error": "Структура матча повреждена"}
 
-        # 3. Парсинг данных
+        # --- ПАРСИНГ ---
         
         # Победитель
         winner_team_id = None
-        elo_info = match_data.get('calculateEloFrom')
-        if isinstance(elo_info, dict):
-            winner_team_id = elo_info.get('winner')
+        elo_data = match_data.get('calculateEloFrom')
+        if isinstance(elo_data, dict):
+            winner_team_id = elo_data.get('winner')
 
         # Поиск игрока
         target_player = None
         my_team_id = None
         
+        # Защита от отсутствия команд
         teams = match_data.get('teams')
         if not isinstance(teams, list): teams = []
 
@@ -124,8 +115,8 @@ def get_match_stats_logic(match_url):
             for player in players:
                 if not isinstance(player, dict): continue
                 
+                # Сравниваем ник
                 p_nick = player.get('nickname', '')
-                # Сравниваем строками в нижнем регистре
                 if str(p_nick).lower() == target_nickname.lower():
                     target_player = player
                     my_team_id = team.get('teamId')
@@ -141,13 +132,13 @@ def get_match_stats_logic(match_url):
             result = "WIN"
 
         # Счет
-        score_info = match_data.get('i18', 'N/A')
-        match_score = score_info
-        if isinstance(score_info, dict):
-            match_score = score_info.get('score', 'N/A')
+        score_val = match_data.get('i18', 'N/A')
+        match_score = score_val
+        if isinstance(score_val, dict):
+            match_score = score_val.get('score', 'N/A')
 
         stats = {
-            "nickname": target_player.get('nickname', target_nickname),
+            "nickname": target_player.get('nickname'),
             "result": result,
             "kills": target_player.get('i6', '0'),
             "deaths": target_player.get('i8', '0'),
@@ -162,8 +153,8 @@ def get_match_stats_logic(match_url):
         return stats
 
     except Exception as e:
-        # Возвращаем текст ошибки на фронтенд для диагностики
-        return {"error": f"System Error: {str(e)}"}
+        print(f"DEBUG CRITICAL EXCEPTION: {e}")
+        return {"error": "Внутренняя ошибка сервера"}
 
 # --- ROUTING ---
 
