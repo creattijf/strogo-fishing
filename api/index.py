@@ -17,109 +17,116 @@ def check_is_fishing(faceit_input):
         user_url = f"https://api.faceit.com/users/v1/nicknames/{nickname}"
         user_res = requests.get(user_url, headers=headers)
         if user_res.status_code != 200: return "error"
-        user_id = user_res.json().get('payload', {}).get('id')
+        
+        user_data = user_res.json()
+        if not isinstance(user_data, dict): return "error"
+        user_id = user_data.get('payload', {}).get('id')
         
         match_url = f"https://api.faceit.com/match/v1/matches/groupByState?userId={user_id}"
         match_res = requests.get(match_url, headers=headers)
         if match_res.status_code != 200: return False
         
-        payload = match_res.json().get('payload', {})
+        data = match_res.json()
+        if not isinstance(data, dict): return False
+        payload = data.get('payload', {})
+        
         for state in payload:
-            if payload[state] and len(payload[state]) > 0:
+            matches = payload[state]
+            if isinstance(matches, list) and len(matches) > 0:
                 return True
         return False
     except:
         return "error"
 
-# --- 2. ПОЛУЧЕНИЕ СТАТИСТИКИ (БРОНЕБОЙНАЯ ВЕРСИЯ) ---
+# --- 2. ПОЛУЧЕНИЕ СТАТИСТИКИ (Safe Mode) ---
 def get_match_stats_logic(match_url):
     headers = {"User-Agent": "Mozilla/5.0"}
     target_nickname = "StRoGo" 
 
     try:
-        # 1. Парсинг ID
         if "room/" not in match_url:
             return {"error": "Неверная ссылка"}
-        match_id = match_url.split("room/")[1].split("/")[0]
-
-        # 2. Запрос API
-        api_url = f"https://api.faceit.com/stats/v1/stats/matches/{match_id}"
-        response = requests.get(api_url, headers=headers)
         
+        match_id = match_url.split("room/")[1].split("/")[0]
+        api_url = f"https://api.faceit.com/stats/v1/stats/matches/{match_id}"
+        
+        response = requests.get(api_url, headers=headers)
         if response.status_code != 200:
             return {"error": "Матч не найден (возможно, еще идет)"}
 
         json_data = response.json()
+        if not isinstance(json_data, dict):
+            return {"error": "Ошибка API Faceit"}
+
         payload = json_data.get('payload')
-
-        # --- ЗАЩИТА ОТ КРИВЫХ ДАННЫХ ---
-        # Payload должен быть списком. Если нет - ошибка.
-        if not payload or not isinstance(payload, list):
-            return {"error": "Нет данных"}
-
-        match_data = payload[0]
-
-        # Если вдруг внутри payload лежит не словарь, а еще один список (бывает и такое)
-        if isinstance(match_data, list):
-            if len(match_data) > 0:
-                match_data = match_data[0]
-            else:
-                return {"error": "Пустые данные матча"}
         
-        # Если после всего этого это не словарь, мы не можем работать
-        if not isinstance(match_data, dict):
-            return {"error": "Некорректный формат данных от Faceit"}
+        # --- НОРМАЛИЗАЦИЯ ДАННЫХ ---
+        # Мы ищем словарь с данными матча. Он может быть глубоко вложен.
+        match_data = None
+        
+        if isinstance(payload, list) and len(payload) > 0:
+            first = payload[0]
+            if isinstance(first, dict):
+                match_data = first
+            elif isinstance(first, list) and len(first) > 0:
+                if isinstance(first[0], dict):
+                    match_data = first[0]
+        elif isinstance(payload, dict):
+            match_data = payload
 
-        # 3. Кто победил
+        if not match_data:
+            return {"error": "Не удалось прочитать структуру матча"}
+
+        # --- БЕЗОПАСНЫЙ ПАРСИНГ ---
+        
+        # Победитель
         winner_team_id = None
         elo_info = match_data.get('calculateEloFrom')
         if isinstance(elo_info, dict):
             winner_team_id = elo_info.get('winner')
 
-        # 4. Поиск игрока
+        # Поиск игрока
         target_player = None
         my_team_id = None
         
-        teams = match_data.get('teams', [])
-        # Защита: teams должен быть списком
-        if not isinstance(teams, list):
-            teams = []
+        teams = match_data.get('teams')
+        if not isinstance(teams, list): teams = []
 
         for team in teams:
+            # САМОЕ ВАЖНОЕ: Если team это не словарь, пропускаем
             if not isinstance(team, dict): continue
             
-            players = team.get('players', [])
+            players = team.get('players')
             if not isinstance(players, list): continue
 
             for player in players:
+                # Если player это не словарь, пропускаем
                 if not isinstance(player, dict): continue
                 
-                # Сравнение ника
                 p_nick = player.get('nickname', '')
-                if p_nick and p_nick.lower() == target_nickname.lower():
+                if p_nick and str(p_nick).lower() == target_nickname.lower():
                     target_player = player
                     my_team_id = team.get('teamId')
                     break
             if target_player: break
         
         if not target_player:
-            return {"error": f"Игрок {target_nickname} не найден в этом матче"}
+            return {"error": f"Игрок {target_nickname} не найден в статистике"}
 
-        # 5. Результат
+        # Результат
         result = "LOSE"
-        # Приводим к строке, чтобы сравнение было точным (иногда приходят int, иногда str)
         if winner_team_id and my_team_id and str(my_team_id) == str(winner_team_id):
             result = "WIN"
 
-        # 6. Счет
+        # Счет
         score_info = match_data.get('i18', 'N/A')
         match_score = score_info
         if isinstance(score_info, dict):
             match_score = score_info.get('score', 'N/A')
 
-        # Сборка ответа
+        # Сборка статистики (с защитой от None)
         stats = {
-            "nickname": target_player.get('nickname'),
+            "nickname": target_player.get('nickname', 'Unknown'),
             "result": result,
             "kills": target_player.get('i6', '0'),
             "deaths": target_player.get('i8', '0'),
@@ -134,9 +141,8 @@ def get_match_stats_logic(match_url):
         return stats
 
     except Exception as e:
-        # Выводим ошибку в консоль сервера для отладки
-        print(f"CRITICAL ERROR parsing: {e}")
-        return {"error": "Ошибка обработки данных"}
+        print(f"CRITICAL ERROR: {e}")
+        return {"error": "Ошибка обработки данных (структура API изменилась)"}
 
 # --- МАРШРУТЫ ---
 
