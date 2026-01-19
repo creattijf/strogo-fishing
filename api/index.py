@@ -18,7 +18,6 @@ def check_is_fishing(faceit_url):
 
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Логика поиска
         room_link = soup.select_one('a[href*="/room/"]')
         text_check = soup.find(string="Playing now") or soup.find(string="Currently playing") or soup.find(string="LIVE")
 
@@ -26,41 +25,22 @@ def check_is_fishing(faceit_url):
             return True
         else:
             return False
-    except Exception as e:
-        print(f"Error: {e}")
+    except:
         return "error"
 
-# --- ГЛАВНЫЕ ИЗМЕНЕНИЯ ЗДЕСЬ ---
-
-# 1. Добавляем корневой маршрут, чтобы при открытии прямой ссылки не было ошибки 404
-@app.route('/', methods=['GET'])
-def home():
-    return "Сервер Strogo Fishing работает! Используй POST запрос на /api/check_fish"
-
-# 2. Дублируем маршруты. Vercel иногда отрезает /api, иногда нет.
-# Мы ловим оба варианта.
+# Оставляем ТОЛЬКО этот маршрут
 @app.route('/api/check_fish', methods=['POST', 'GET'])
-@app.route('/check_fish', methods=['POST', 'GET']) 
 def check_fish():
-    # Если открыли в браузере (GET), покажем инструкцию
     if request.method == 'GET':
-        return jsonify({"status": "info", "message": "Используй POST запрос с JSON данными"})
+        return jsonify({"status": "info", "message": "API работает"})
 
-    # Обработка POST (как раньше)
     data = request.json
-    if not data:
-        return jsonify({"status": "error", "message": "Нет данных"})
-        
     url = data.get('url')
     status = check_is_fishing(url)
     
     if status == "error":
-        return jsonify({"status": "error", "message": "Ошибка доступа к Faceit"})
+        return jsonify({"status": "error", "message": "Ошибка"})
     elif status:
         return jsonify({"status": "online", "message": "В пруду 🎣"})
     else:
         return jsonify({"status": "offline", "message": "Не в пруду ❌"})
-
-# Для локального запуска
-if __name__ == '__main__':
-    app.run(debug=True)
