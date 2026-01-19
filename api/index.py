@@ -5,26 +5,20 @@ import requests
 app = Flask(__name__)
 CORS(app)
 
-# --- 1. ПРОВЕРКА ОНЛАЙНА (Старая функция) ---
+# --- ПРОВЕРКА ОНЛАЙНА ---
 def check_is_fishing(faceit_input):
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Referer": "https://www.faceit.com/"
-    }
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
         nickname = faceit_input
         if "faceit.com" in faceit_input:
             parts = faceit_input.rstrip('/').split('/')
             nickname = parts[-1]
         
-        # Получаем ID
         user_url = f"https://api.faceit.com/users/v1/nicknames/{nickname}"
         user_res = requests.get(user_url, headers=headers)
         if user_res.status_code != 200: return "error"
         user_id = user_res.json().get('payload', {}).get('id')
-        if not user_id: return "error"
-
-        # Проверяем матчи
+        
         match_url = f"https://api.faceit.com/match/v1/matches/groupByState?userId={user_id}"
         match_res = requests.get(match_url, headers=headers)
         if match_res.status_code != 200: return False
@@ -37,77 +31,94 @@ def check_is_fishing(faceit_input):
     except:
         return "error"
 
-# --- 2. ПОЛУЧЕНИЕ СТАТИСТИКИ МАТЧА (Новая функция) ---
+# --- ПОЛУЧЕНИЕ СТАТИСТИКИ (ИСПРАВЛЕНО) ---
 def get_match_stats_logic(match_url):
     headers = {"User-Agent": "Mozilla/5.0"}
-    target_nickname = "StRoGo" # Ищем ТОЛЬКО этого игрока
+    # ВАЖНО: Ищем именно этого игрока
+    target_nickname = "StRoGo"
 
     try:
-        # Вытаскиваем Match ID из ссылки
-        # Ссылка вида: .../room/1-54cc7dd5-fc1e...
+        # 1. Достаем ID матча из ссылки
         if "room/" not in match_url:
-            return {"error": "Неверная ссылка"}
+            return {"error": "Это не ссылка на комнату"}
         
+        # Ссылка может быть разной, берем кусок после room/
         match_id = match_url.split("room/")[1].split("/")[0]
 
-        # Запрос к API статистики
+        # 2. Запрос к статистике
         api_url = f"https://api.faceit.com/stats/v1/stats/matches/{match_id}"
         response = requests.get(api_url, headers=headers)
         
         if response.status_code != 200:
-            return {"error": "Матч не найден или еще идет"}
+            return {"error": "Матч не найден или статистика еще не готова"}
 
-        data = response.json().get('payload', [])
-        if not data:
+        json_resp = response.json()
+        payload = json_resp.get('payload')
+
+        # Защита от ошибки 'list object has no attribute get'
+        if not payload or not isinstance(payload, list):
             return {"error": "Нет данных"}
 
-        match_data = data[0] # Берем первый (единственный) матч
-        
-        # Ищем StRoGo в командах
+        match_data = payload[0] # Берем первый элемент списка
+
+        # 3. Определяем победителя
+        # calculateEloFrom может быть списком [], поэтому проверяем тип
+        winner_team_id = None
+        elo_info = match_data.get('calculateEloFrom')
+        if isinstance(elo_info, dict):
+            winner_team_id = elo_info.get('winner')
+
+        # 4. Ищем StRoGo
         target_player = None
         my_team_id = None
-        winner_team_id = match_data.get('calculateEloFrom', {}).get('winner') # Кто победил
-
-        # Пробегаемся по командам
-        for team in match_data.get('teams', []):
-            for player in team.get('players', []):
-                # Сравниваем ник (регистр не важен)
-                if player.get('nickname').lower() == target_nickname.lower():
+        
+        # Перебираем команды
+        teams = match_data.get('teams', [])
+        for team in teams:
+            players = team.get('players', [])
+            for player in players:
+                # Сравниваем ник
+                if player.get('nickname', '').lower() == target_nickname.lower():
                     target_player = player
                     my_team_id = team.get('teamId')
                     break
             if target_player: break
         
         if not target_player:
-            return {"error": f"Игрок {target_nickname} не найден в этом матче"}
+            return {"error": f"Игрок {target_nickname} не играл в этом матче"}
 
-        # Определяем результат
+        # 5. Результат (Победа/Поражение)
         result = "LOSE"
-        if my_team_id == winner_team_id:
+        if winner_team_id and my_team_id and str(my_team_id) == str(winner_team_id):
             result = "WIN"
 
-        # Собираем статистику
+        # 6. Счет матча
+        # Иногда i18 это строка, иногда словарь. Проверяем.
+        score_raw = match_data.get('i18', 'N/A')
+        match_score = score_raw
+        if isinstance(score_raw, dict):
+            match_score = score_raw.get('score', 'N/A')
+
         stats = {
             "nickname": target_player.get('nickname'),
             "result": result,
-            "kills": target_player.get('i6'),
-            "deaths": target_player.get('i8'),
-            "assists": target_player.get('i7'),
-            "kr": target_player.get('c3'),  # K/R Ratio
-            "kd": target_player.get('c2'),  # K/D Ratio
-            "hs_percent": target_player.get('c4'), # HS %
-            "mvp": target_player.get('i9'),
-            "score": f"{match_data.get('i18', {}).get('score')}" # Счет матча (строка "13 / 10")
+            "kills": target_player.get('i6', '0'),
+            "deaths": target_player.get('i8', '0'),
+            "assists": target_player.get('i7', '0'),
+            "kr": target_player.get('c3', '0.0'),
+            "kd": target_player.get('c2', '0.0'),
+            "hs_percent": target_player.get('c4', '0'),
+            "mvp": target_player.get('i9', '0'),
+            "score": match_score
         }
         
         return stats
 
     except Exception as e:
-        print(e)
-        return {"error": "Ошибка обработки"}
+        print(f"Error: {e}")
+        return {"error": "Ошибка обработки данных"}
 
-# --- МАРШРУТЫ ---
-
+# --- ROUTING ---
 @app.route('/api/check_fish', methods=['POST'])
 def check_fish():
     data = request.json
