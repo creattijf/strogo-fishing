@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Strogo Рыбалка</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        :root { --bg: #0f1214; --card: #1c2024; --accent: #ff5500; --text: #fff; --sec: #9fa6b3; --green: #2ecc71; --red: #e74c3c; }
+        body { background: var(--bg); color: var(--text); font-family: sans-serif; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
+        h1 { font-size: 24px; text-transform: uppercase; margin-bottom: 20px; text-shadow: 0 0 10px rgba(255,85,0,0.5); }
+        .input-group { width: 100%; display: flex; gap: 10px; margin-bottom: 25px; }
+        input { flex: 1; padding: 12px; border-radius: 8px; border: 1px solid #333; background: var(--card); color: white; outline: none; }
+        input:focus { border-color: var(--accent); }
+        button.add-btn { background: var(--accent); color: white; border: none; padding: 0 20px; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 20px; }
+        .fish-list { width: 100%; display: flex; flex-direction: column; gap: 15px; }
+        .fish-card { background: var(--card); padding: 15px; border-radius: 12px; display: flex; justify-content: space-between; align-items: center; border-left: 4px solid #333; }
+        .fish-info { display: flex; flex-direction: column; }
+        .fish-name { font-weight: bold; font-size: 16px; margin-bottom: 4px; }
+        .fish-link { font-size: 12px; color: var(--sec); text-decoration: none; }
+        .status-badge { padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; min-width: 80px; text-align: center; }
+        .status-loading { background: #333; color: #ccc; }
+        .status-online { background: rgba(46,204,113,0.2); color: var(--green); border: 1px solid var(--green); }
+        .status-offline { background: rgba(231,76,60,0.1); color: var(--red); border: 1px solid var(--red); }
+        .delete-btn { background: none; border: none; color: #555; margin-left: 10px; font-size: 18px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <h1>🎣 Strogo Рыбалка</h1>
+    <div class="input-group">
+        <input type="text" id="playerInput" placeholder="Ник или ссылка...">
+        <button class="add-btn" onclick="addNewFish()">+</button>
+    </div>
+    <div id="fishContainer" class="fish-list"></div>
+
+    <script>
+        const tg = window.Telegram.WebApp;
+        tg.expand();
+
+        // ВАЖНО: Мы используем относительный путь, так как и бэк, и фронт на одном домене
+        const API_URL = "/api/check_fish"; 
+
+        let players = [
+            { name: "m0NESY", url: "https://www.faceit.com/ru/players/m0NESY" },
+            { name: "donk666", url: "https://www.faceit.com/ru/players/donk666" }
+        ];
+
+        const saved = localStorage.getItem('strogo_players');
+        if (saved) players = JSON.parse(saved);
+
+        function renderList() {
+            const container = document.getElementById('fishContainer');
+            container.innerHTML = '';
+            players.forEach((player, index) => {
+                const card = document.createElement('div');
+                card.className = 'fish-card';
+                card.innerHTML = `
+                    <div class="fish-info">
+                        <span class="fish-name">${player.name}</span>
+                        <a href="${player.url}" class="fish-link" target="_blank">Профиль</a>
+                    </div>
+                    <div style="display:flex; align-items:center;">
+                        <div class="status-badge status-loading" id="status-${index}">...</div>
+                        <button class="delete-btn" onclick="removeFish(${index})">×</button>
+                    </div>
+                `;
+                container.appendChild(card);
+                checkStatus(player.url, index);
+            });
+        }
+
+        async function checkStatus(url, index) {
+            const badge = document.getElementById(`status-${index}`);
+            try {
+                const res = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: url })
+                });
+                const data = await res.json();
+                if (data.status === 'online') {
+                    badge.className = 'status-badge status-online';
+                    badge.textContent = 'В пруду 🎣';
+                } else {
+                    badge.className = 'status-badge status-offline';
+                    badge.textContent = 'Не в пруду';
+                }
+            } catch (e) {
+                badge.textContent = 'Ошибка';
+            }
+        }
+
+        function addNewFish() {
+            const val = document.getElementById('playerInput').value.trim();
+            if (!val) return;
+            let name = val.includes('/') ? val.split('/').pop() : val;
+            let url = val.includes('faceit.com') ? val : `https://www.faceit.com/ru/players/${val}`;
+            players.push({ name, url });
+            localStorage.setItem('strogo_players', JSON.stringify(players));
+            document.getElementById('playerInput').value = '';
+            renderList();
+        }
+
+        function removeFish(index) {
+            players.splice(index, 1);
+            localStorage.setItem('strogo_players', JSON.stringify(players));
+            renderList();
+        }
+
+        renderList();
+    </script>
+</body>
+</html>
