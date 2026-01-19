@@ -10,6 +10,26 @@ HEADERS = {
     "Accept": "application/json"
 }
 
+# --- ФУНКЦИЯ-ИЩЕЙКА ---
+# Рекурсивно ищет словарь с данными матча внутри любой каши из списков
+def find_match_object(data):
+    if isinstance(data, dict):
+        # Если нашли словарь, в котором есть 'teams' и 'i18' (счет) - это оно!
+        if 'teams' in data and 'i18' in data:
+            return data
+        # Иначе ищем в значениях этого словаря
+        for key, value in data.items():
+            result = find_match_object(value)
+            if result: return result
+            
+    elif isinstance(data, list):
+        # Если это список, проверяем каждый элемент
+        for item in data:
+            result = find_match_object(item)
+            if result: return result
+            
+    return None
+
 # --- 1. ПРОВЕРКА ОНЛАЙНА ---
 def check_is_fishing(faceit_input):
     try:
@@ -41,44 +61,39 @@ def check_is_fishing(faceit_input):
     except:
         return "error"
 
-# --- 2. ПОЛУЧЕНИЕ СТАТИСТИКИ (ЛОГИКА ПО СЧЕТУ) ---
+# --- 2. ПОЛУЧЕНИЕ СТАТИСТИКИ ---
 def get_match_stats_logic(match_url):
     target_nickname = "StRoGo" 
 
     try:
-        # 1. Ссылка -> ID
         if "room/" not in match_url:
-            return {"error": "Нужна ссылка на комнату"}
+            return {"error": "Неверная ссылка"}
         
         match_id = match_url.split("room/")[1].split("/")[0]
         api_url = f"https://api.faceit.com/stats/v1/stats/matches/{match_id}"
         
         response = requests.get(api_url, headers=HEADERS)
         if response.status_code != 200:
-            return {"error": "Матч не найден"}
+            return {"error": "Матч не найден или статистика недоступна"}
 
-        raw_data = response.json()
-        payload = raw_data.get('payload')
+        json_response = response.json()
+        
+        # ЗАПУСКАЕМ ИЩЕЙКУ
+        match_data = find_match_object(json_response)
 
-        # Защита от кривых данных
-        match_data = None
-        if isinstance(payload, list) and len(payload) > 0:
-            match_data = payload[0]
-            if isinstance(match_data, list): match_data = match_data[0] # Если двойной список
-        elif isinstance(payload, dict):
-            match_data = payload
+        if not match_data:
+            return {"error": "Не удалось найти данные внутри ответа API"}
 
-        if not isinstance(match_data, dict):
-            return {"error": "Ошибка структуры данных"}
+        # --- ДАЛЬШЕ РАБОТАЕМ С НАЙДЕННЫМ СЛОВАРЕМ ---
 
-        # 2. Ищем игрока и ОПРЕДЕЛЯЕМ ИНДЕКС КОМАНДЫ (0 или 1)
+        # 1. Определяем команды и где находится StRoGo
         target_player = None
-        my_team_index = -1 # 0 - это первая команда, 1 - это вторая
+        my_team_index = -1 # 0 или 1
         
         teams = match_data.get('teams', [])
+        # Если вдруг teams не список (бывает всякое)
         if not isinstance(teams, list): teams = []
 
-        # Пробегаемся по командам с индексом (idx)
         for idx, team in enumerate(teams):
             if not isinstance(team, dict): continue
             
@@ -88,18 +103,17 @@ def get_match_stats_logic(match_url):
             for player in players:
                 if not isinstance(player, dict): continue
                 
-                # Сравниваем ник
                 p_nick = player.get('nickname', '')
                 if str(p_nick).lower() == target_nickname.lower():
                     target_player = player
-                    my_team_index = idx # Запоминаем: мы в первой (0) или второй (1) команде
+                    my_team_index = idx
                     break
             if target_player: break
         
         if not target_player:
-            return {"error": f"Игрок {target_nickname} не найден в матче"}
+            return {"error": f"Игрок {target_nickname} не найден"}
 
-        # 3. Достаем СЧЕТ и определяем победителя
+        # 2. Определяем победу ПО СЧЕТУ
         score_obj = match_data.get('i18', '0 / 0')
         match_score_str = "0 / 0"
         
@@ -108,7 +122,7 @@ def get_match_stats_logic(match_url):
         elif isinstance(score_obj, str):
             match_score_str = score_obj
 
-        # Парсим строку "13 / 9"
+        # Парсинг счета "13 / 9"
         try:
             scores = match_score_str.split(' / ')
             team1_score = int(scores[0])
@@ -117,13 +131,10 @@ def get_match_stats_logic(match_url):
             team1_score = 0
             team2_score = 0
 
-        # Логика: 
-        # Если мы в команде 0, то наш счет - это team1_score
-        # Если мы в команде 1, то наш счет - это team2_score
-        
         my_score = 0
         enemy_score = 0
         
+        # Команда 0 - счет слева, Команда 1 - счет справа
         if my_team_index == 0:
             my_score = team1_score
             enemy_score = team2_score
@@ -131,12 +142,11 @@ def get_match_stats_logic(match_url):
             my_score = team2_score
             enemy_score = team1_score
 
-        # Финальное решение
         result = "LOSE"
         if my_score > enemy_score:
             result = "WIN"
         elif my_score == enemy_score:
-            result = "DRAW" # Ничья (редко, но бывает)
+            result = "DRAW"
 
         stats = {
             "nickname": target_player.get('nickname'),
@@ -154,8 +164,8 @@ def get_match_stats_logic(match_url):
         return stats
 
     except Exception as e:
-        print(f"Error: {e}")
-        return {"error": "Ошибка обработки"}
+        print(f"CRITICAL ERROR: {e}")
+        return {"error": f"Ошибка: {str(e)}"}
 
 # --- ROUTING ---
 
