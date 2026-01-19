@@ -5,7 +5,7 @@ import requests
 app = Flask(__name__)
 CORS(app)
 
-# --- ПРОВЕРКА ОНЛАЙНА ---
+# --- 1. ПРОВЕРКА ОНЛАЙНА ---
 def check_is_fishing(faceit_input):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -31,74 +31,93 @@ def check_is_fishing(faceit_input):
     except:
         return "error"
 
-# --- ПОЛУЧЕНИЕ СТАТИСТИКИ (ИСПРАВЛЕНО) ---
+# --- 2. ПОЛУЧЕНИЕ СТАТИСТИКИ (БРОНЕБОЙНАЯ ВЕРСИЯ) ---
 def get_match_stats_logic(match_url):
     headers = {"User-Agent": "Mozilla/5.0"}
-    # ВАЖНО: Ищем именно этого игрока
-    target_nickname = "StRoGo"
+    target_nickname = "StRoGo" 
 
     try:
-        # 1. Достаем ID матча из ссылки
+        # 1. Парсинг ID
         if "room/" not in match_url:
-            return {"error": "Это не ссылка на комнату"}
-        
-        # Ссылка может быть разной, берем кусок после room/
+            return {"error": "Неверная ссылка"}
         match_id = match_url.split("room/")[1].split("/")[0]
 
-        # 2. Запрос к статистике
+        # 2. Запрос API
         api_url = f"https://api.faceit.com/stats/v1/stats/matches/{match_id}"
         response = requests.get(api_url, headers=headers)
         
         if response.status_code != 200:
-            return {"error": "Матч не найден или статистика еще не готова"}
+            return {"error": "Матч не найден (возможно, еще идет)"}
 
-        json_resp = response.json()
-        payload = json_resp.get('payload')
+        json_data = response.json()
+        payload = json_data.get('payload')
 
-        # Защита от ошибки 'list object has no attribute get'
+        # --- ЗАЩИТА ОТ КРИВЫХ ДАННЫХ ---
+        # Payload должен быть списком. Если нет - ошибка.
         if not payload or not isinstance(payload, list):
             return {"error": "Нет данных"}
 
-        match_data = payload[0] # Берем первый элемент списка
+        match_data = payload[0]
 
-        # 3. Определяем победителя
-        # calculateEloFrom может быть списком [], поэтому проверяем тип
+        # Если вдруг внутри payload лежит не словарь, а еще один список (бывает и такое)
+        if isinstance(match_data, list):
+            if len(match_data) > 0:
+                match_data = match_data[0]
+            else:
+                return {"error": "Пустые данные матча"}
+        
+        # Если после всего этого это не словарь, мы не можем работать
+        if not isinstance(match_data, dict):
+            return {"error": "Некорректный формат данных от Faceit"}
+
+        # 3. Кто победил
         winner_team_id = None
         elo_info = match_data.get('calculateEloFrom')
         if isinstance(elo_info, dict):
             winner_team_id = elo_info.get('winner')
 
-        # 4. Ищем StRoGo
+        # 4. Поиск игрока
         target_player = None
         my_team_id = None
         
-        # Перебираем команды
         teams = match_data.get('teams', [])
+        # Защита: teams должен быть списком
+        if not isinstance(teams, list):
+            teams = []
+
         for team in teams:
+            if not isinstance(team, dict): continue
+            
             players = team.get('players', [])
+            if not isinstance(players, list): continue
+
             for player in players:
-                # Сравниваем ник
-                if player.get('nickname', '').lower() == target_nickname.lower():
+                if not isinstance(player, dict): continue
+                
+                # Сравнение ника
+                p_nick = player.get('nickname', '')
+                if p_nick and p_nick.lower() == target_nickname.lower():
                     target_player = player
                     my_team_id = team.get('teamId')
                     break
             if target_player: break
         
         if not target_player:
-            return {"error": f"Игрок {target_nickname} не играл в этом матче"}
+            return {"error": f"Игрок {target_nickname} не найден в этом матче"}
 
-        # 5. Результат (Победа/Поражение)
+        # 5. Результат
         result = "LOSE"
+        # Приводим к строке, чтобы сравнение было точным (иногда приходят int, иногда str)
         if winner_team_id and my_team_id and str(my_team_id) == str(winner_team_id):
             result = "WIN"
 
-        # 6. Счет матча
-        # Иногда i18 это строка, иногда словарь. Проверяем.
-        score_raw = match_data.get('i18', 'N/A')
-        match_score = score_raw
-        if isinstance(score_raw, dict):
-            match_score = score_raw.get('score', 'N/A')
+        # 6. Счет
+        score_info = match_data.get('i18', 'N/A')
+        match_score = score_info
+        if isinstance(score_info, dict):
+            match_score = score_info.get('score', 'N/A')
 
+        # Сборка ответа
         stats = {
             "nickname": target_player.get('nickname'),
             "result": result,
@@ -109,16 +128,18 @@ def get_match_stats_logic(match_url):
             "kd": target_player.get('c2', '0.0'),
             "hs_percent": target_player.get('c4', '0'),
             "mvp": target_player.get('i9', '0'),
-            "score": match_score
+            "score": str(match_score)
         }
         
         return stats
 
     except Exception as e:
-        print(f"Error: {e}")
+        # Выводим ошибку в консоль сервера для отладки
+        print(f"CRITICAL ERROR parsing: {e}")
         return {"error": "Ошибка обработки данных"}
 
-# --- ROUTING ---
+# --- МАРШРУТЫ ---
+
 @app.route('/api/check_fish', methods=['POST'])
 def check_fish():
     data = request.json
